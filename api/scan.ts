@@ -15,7 +15,7 @@
 // ───────────────────────── config ─────────────────────────
 const cfg = {
   granularity: 300, // M5
-  history: 1000, // candles fetched per market (~3.5 days)
+  history: 500, // candles fetched per market (~3.5 days)
   atrPeriod: 14,
   warmup: 30,
   // zones
