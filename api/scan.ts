@@ -2,9 +2,9 @@
  * Step Index signal scanner for Vercel (one file, no imports, no dependencies).
  * Needs Node 22+ (built-in WebSocket client).
  *
- * Each call: connect to Deriv, pull ~1000 M5 candles for the 5 markets, replay the
- * supply/demand + candlestick logic over them, and return recent signals, active zones
- * and a backtest of the loaded history.
+ * Each call: connect to Deriv, pull ~3000 M5 candles for the 5 markets (in pages of 500),
+ * replay the supply/demand + candlestick logic over them, and return recent signals,
+ * active zones and a backtest of the loaded history.
  *
  * Optional env vars (Vercel -> Settings -> Environment Variables):
  *   DERIV_WS_URL   websocket URL to try first
@@ -15,7 +15,7 @@
 // ───────────────────────── config ─────────────────────────
 const cfg = {
   granularity: 300, // M5
-  history: 500, // candles fetched per market (~3.5 days)
+  history: 3000, // candles kept per market (~10 days); fetched in pages of 500
   atrPeriod: 14,
   warmup: 30,
   // zones
@@ -359,6 +359,38 @@ async function resolveSymbols(d: Deriv): Promise<SymMap> {
   return out;
 }
 
+// ───────────────────────── candle history (paged) ─────────────────────────
+// Deriv returns at most ~500 candles per request, so older candles are fetched page by page
+// (end = epoch just before the oldest candle we have) and stitched together. The result is
+// cached in memory so warm invocations only need to fetch the newest page.
+const PAGE = 500;
+const candleCache = new Map<string, Candle[]>();
+
+async function fetchPage(d: Deriv, code: string, end: string, count: number): Promise<Candle[]> {
+  const r = await d.req({ ticks_history: code, style: "candles", granularity: cfg.granularity, end, count, adjust_start_time: 1 });
+  return (r.candles ?? []).map((x: any) => ({ t: +x.epoch, o: +x.open, h: +x.high, l: +x.low, c: +x.close }));
+}
+
+async function getCandles(d: Deriv, code: string, want: number): Promise<Candle[]> {
+  const cached = candleCache.get(code);
+  const newest = await fetchPage(d, code, "latest", PAGE); // an error here is a real error
+  let all = newest;
+  if (cached?.length && newest.length && newest[0].t <= cached[cached.length - 1].t)
+    all = [...cached.filter((c) => c.t < newest[0].t), ...newest]; // reuse older candles we already hold
+
+  for (let guard = 0; all.length && all.length < want && guard < 20; guard++) {
+    let older: Candle[];
+    try { older = await fetchPage(d, code, String(all[0].t - 1), Math.min(PAGE, want - all.length)); }
+    catch { break; } // e.g. rate limit: carry on with what we have
+    const fresh = older.filter((c) => c.t < all[0].t);
+    if (!fresh.length) break;
+    all = [...fresh, ...all];
+  }
+  if (all.length > want) all = all.slice(all.length - want);
+  candleCache.set(code, all);
+  return all;
+}
+
 // ───────────────────────── scan ─────────────────────────
 export async function scan() {
   const d = new Deriv();
@@ -371,8 +403,7 @@ export async function scan() {
     const results = await Promise.all(MARKETS.map(async (m) => {
       const s = sym[m.name];
       try {
-        const r = await d.req({ ticks_history: s.code, style: "candles", granularity: cfg.granularity, end: "latest", count: cfg.history, adjust_start_time: 1 });
-        const cs: Candle[] = (r.candles ?? []).map((x: any) => ({ t: +x.epoch, o: +x.open, h: +x.high, l: +x.low, c: +x.close }));
+        const cs = [...(await getCandles(d, s.code, cfg.history))]; // copy: the cache keeps the original
         if (cs.length && cs[cs.length - 1].t + cfg.granularity > now) cs.pop(); // still forming
         if (cs.length < cfg.warmup + 10) throw new Error(`only ${cs.length} candles returned`);
         const a = analyzeMarket(m.name, cs);
