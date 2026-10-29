@@ -1,1 +1,7 @@
-
+{
+  "functions": {
+    "api/scan.ts": {
+      "maxDuration": 30
+    }
+  }
+}
