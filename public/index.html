@@ -93,7 +93,7 @@ function render(d) {
   const v = d.verdict;
   $("#verdict").className = "box verdict " + v.level;
   $("#verdictText").innerHTML = esc(v.text) +
-    '<div class="muted" style="margin-top:6px">Backtest of the loaded history (~3.5 days per market): ' + v.n +
+        '<div class="muted" style="margin-top:6px">Backtest of the loaded history (~' + (Math.max(...d.markets.map((m) => m.candles || 0)) / 288).toFixed(1) + " days per market): " + v.n +
     " resolved signals. Break-even win rate at " + d.config.rr + ":1 is " + (v.breakEvenWinRate * 100).toFixed(1) + "%.</div>";
 
   const all = [];
