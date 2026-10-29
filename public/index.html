@@ -1,1 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Step Index Signals</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121923; --line: #1f2a37; --text: #e6edf3; --muted: #8b98a9;
+    --buy: #2ecc8f; --sell: #ff5d73; --accent: #6ea8fe; --warn: #f0b429;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6f9; --panel: #ffffff; --line: #dde3ea; --text: #15202b; --muted: #5b6b7d;
+            --buy: #0f9d6b; --sell: #d63a52; --accent: #2563eb; --warn: #b7791f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.ok { background: var(--buy); } .dot.bad { background: var(--sell); }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px 12px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  button.on { border-color: var(--buy); color: var(--buy); }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .box h2 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .verdict { border-left: 3px solid var(--muted); }
+  .verdict.edge { border-left-color: var(--buy); } .verdict.loss { border-left-color: var(--sell); }
+  .verdict.none, .verdict.thin { border-left-color: var(--warn); }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 12px; }
+  @media (min-width: 560px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .card.buy { border-color: var(--buy); } .card.sell { border-color: var(--sell); }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .name { font-weight: 600; }
+  .price { font-variant-numeric: tabular-nums; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .badge.buy { background: color-mix(in srgb, var(--buy) 18%, transparent); color: var(--buy); }
+  .badge.sell { background: color-mix(in srgb, var(--sell) 18%, transparent); color: var(--sell); }
+  .badge.flat { background: var(--line); color: var(--muted); }
+  .sig { padding: 10px 0; border-top: 1px solid var(--line); }
+  .sig:first-of-type { border-top: 0; padding-top: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .win { color: var(--buy); } .loss { color: var(--sell); }
+  .err { color: var(--sell); font-size: 13px; }
+  footer { color: var(--muted); font-size: 12px; margin: 18px 0 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Step Index Signals</h1>
+      <div class="sub"><span id="dot" class="dot"></span><span id="status">connecting...</span></div>
+      <div class="sub" id="countdown"></div>
+    </div>
+    <button id="alertBtn">Alerts: off</button>
+  </header>
 
+  <div id="verdict" class="box verdict"><h2>Edge check</h2><div id="verdictText" class="muted">Loading...</div></div>
+  <div id="grid" class="grid"></div>
+  <div class="box"><h2>Recent signals (last 3 hours)</h2><div id="signals" class="muted">Nothing yet.</div></div>
+
+  <footer>
+    M5 candles. Supply/demand zones plus candlestick patterns, 2:1 reward-to-risk. Educational tool, not financial advice.
+    Step Indices are synthetic, so an "edge check" near zero is the normal result. Trust the check above, not the colours.
+  </footer>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const n2 = (x) => Number(x).toFixed(2);
+const sgn = (x) => (x >= 0 ? "+" : "") + Number(x).toFixed(2);
+const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+let data = null, alertsOn = false, firstLoad = true, audio = null;
+const seen = new Set();
+
+function age(t, lastT) {
+  const c = Math.round((lastT - t) / 300);
+  return c <= 0 ? "just now" : c === 1 ? "1 candle ago" : c + " candles ago";
+}
+
+function render(d) {
+  $("#dot").className = "dot ok";
+  $("#status").textContent = "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+  const v = d.verdict;
+  $("#verdict").className = "box verdict " + v.level;
+  $("#verdictText").innerHTML = esc(v.text) +
+    '<div class="muted" style="margin-top:6px">Backtest of the loaded history (~3.5 days per market): ' + v.n +
+    " resolved signals. Break-even win rate at " + d.config.rr + ":1 is " + (v.breakEvenWinRate * 100).toFixed(1) + "%.</div>";
+
+  const all = [];
+  $("#grid").innerHTML = d.markets.map((m) => {
+    if (m.error) {
+      return '<div class="card"><div class="row"><span class="name">' + esc(m.name) + '</span><span class="badge flat">error</span></div>' +
+        '<div class="err">' + esc(m.error) + '</div><div class="muted">symbol tried: ' + esc(m.symbol) + (m.confirmed ? "" : " (guessed)") + "</div></div>";
+    }
+    for (const s of m.signals) all.push(s);
+    const fresh = m.signals.filter((s) => m.lastCandleT - s.t <= 300).pop();
+    const h = m.history;
+    const cls = fresh ? fresh.side.toLowerCase() : "";
+    const badge = fresh ? '<span class="badge ' + cls + '">' + fresh.side + " " + esc(age(fresh.t, m.lastCandleT)) + "</span>" : '<span class="badge flat">watching</span>';
+    return '<div class="card ' + cls + '">' +
+      '<div class="row"><span class="name">' + esc(m.name) + "</span>" + badge + "</div>" +
+      '<div class="row"><span class="price num">' + n2(m.price) + '</span><span class="muted">' + m.zones.demand + " demand / " + m.zones.supply + " supply zones</span></div>" +
+      '<div class="muted num">history: ' + h.signals + " signals, " + (h.winRate === null ? "n/a" : (h.winRate * 100).toFixed(0) + "% win") + ", mean " + sgn(h.meanR) + "R</div>" +
+      (m.confirmed ? "" : '<div class="muted">symbol ' + esc(m.symbol) + " is a guess, not confirmed by Deriv</div>") +
+      "</div>";
+  }).join("");
+
+  all.sort((a, b) => b.t - a.t);
+  const lastT = Math.max(...d.markets.filter((m) => !m.error).map((m) => m.lastCandleT), 0);
+  $("#signals").innerHTML = all.length ? all.map((s) => {
+    const st = s.status === "OPEN" ? "open" : s.status.toLowerCase() + " " + sgn(s.R) + "R";
+    const cl = s.status === "WIN" ? "win" : s.status === "LOSS" ? "loss" : "";
+    return '<div class="sig"><div class="row"><span><span class="badge ' + s.side.toLowerCase() + '">' + s.side + "</span> <b>" + esc(s.market) + '</b></span><span class="muted">' + clock(s.t + 300) + " (" + esc(age(s.t, lastT)) + ")</span></div>" +
+      '<div class="muted">' + esc(s.pattern) + " in " + s.zone.kind + " zone " + n2(s.zone.lo) + "-" + n2(s.zone.hi) + "</div>" +
+      '<div class="num">entry ' + n2(s.entry) + " &nbsp; SL " + n2(s.sl) + " &nbsp; TP " + n2(s.tp) + ' &nbsp; <span class="' + cl + '">' + esc(st) + "</span></div></div>";
+  }).join("") : "No signals in the last 3 hours.";
+
+  // alerts for signals that appeared after the page loaded
+  for (const s of all) {
+    const key = s.market + "-" + s.t;
+    if (!seen.has(key)) {
+      seen.add(key);
+      if (!firstLoad && alertsOn && lastT - s.t <= 300) notify(s);
+    }
+  }
+  firstLoad = false;
+}
+
+function notify(s) {
+  try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) {}
+  try {
+    if (audio) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.connect(g); g.connect(audio.destination); o.frequency.value = s.side === "BUY" ? 880 : 440; g.gain.value = 0.1;
+      o.start(); o.stop(audio.currentTime + 0.25);
+    }
+  } catch (e) {}
+  try {
+    if ("Notification" in window && Notification.permission === "granted")
+      new Notification(s.side + " " + s.market, { body: s.pattern + " | entry " + n2(s.entry) + " SL " + n2(s.sl) + " TP " + n2(s.tp) });
+  } catch (e) {}
+}
+
+$("#alertBtn").addEventListener("click", () => {
+  alertsOn = !alertsOn;
+  $("#alertBtn").textContent = "Alerts: " + (alertsOn ? "on" : "off");
+  $("#alertBtn").className = alertsOn ? "on" : "";
+  if (alertsOn) {
+    try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+    try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+  }
+});
+
+async function load() {
+  try {
+    const r = await fetch("/api/scan", { cache: "no-store" });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error + (d.hint ? " " + d.hint : ""));
+    data = d;
+    render(d);
+  } catch (e) {
+    $("#dot").className = "dot bad";
+    $("#status").textContent = "error: " + e.message;
+  }
+}
+
+setInterval(() => {
+  if (!data) return;
+  const lastT = Math.max(...data.markets.filter((m) => !m.error).map((m) => m.lastCandleT), 0);
+  if (!lastT) return;
+  const left = lastT + 600 - Date.now() / 1000;
+  $("#countdown").textContent = left > 0 ? "next M5 close in " + Math.floor(left / 60) + "m " + String(Math.floor(left % 60)).padStart(2, "0") + "s" : "candle closing, refreshing...";
+}, 1000);
+
+load();
+setInterval(load, 20000);
+</script>
+</body>
+</html>
